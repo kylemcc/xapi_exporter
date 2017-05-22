@@ -1,9 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
+	"encoding/xml"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +16,13 @@ import (
 
 	xenAPI "github.com/johnprather/go-xen-api-client"
 	"github.com/prometheus/client_golang/prometheus"
+)
+
+var (
+	tr = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	httpClient = &http.Client{Transport: tr}
 )
 
 type exporterClass struct {
@@ -136,18 +148,21 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 		g.poolName, timeConnected-timeStarted)
 
 	poolRecs, err := xenClient.Pool.GetAllRecords(session)
+	//fmt.Printf("pool: %+v\n", poolRecs)
 	if err != nil {
 		log.Printf("Error getting pool records for %s: %s", g.poolName, err.Error())
 		return
 	}
 
 	hostRecs, err := xenClient.Host.GetAllRecords(session)
+	//fmt.Printf("host: %+v\n", hostRecs)
 	if err != nil {
 		log.Printf("Error getting host records for %s: %s\n", g.poolName, err.Error())
 		return
 	}
 
 	vmRecs, err := xenClient.VM.GetAllRecords(session)
+	//fmt.Printf("vms: %+v\n", vmRecs)
 	if err != nil {
 		log.Printf("Error getting vm records for %s: %s\n", g.poolName, err.Error())
 		return
@@ -365,10 +380,97 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 
 	}
 
+	getRRDs(hostRecs, xenClient)
+
 	timeGenerated := time.Now().Unix()
 	log.Printf("gatherPoolData(): %s: gather time %d seconds\n",
 		g.poolName, timeGenerated-timeStarted)
 
+}
+
+type Entry struct {
+	MetricType string // e.g.: AVERAGE
+	EntityType string // vm, host
+	UUID       string
+	MetricName string
+}
+
+type Legend struct {
+	Entry Entry `xml:"entry"`
+}
+
+type Row struct {
+	Timestamp int64    `xml:"t"`
+	Value     []string `xml:"v"`
+}
+
+type Data struct {
+	Row Row `xml:"row"`
+}
+
+func (l *Entry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) (err error) {
+	var e string
+	d.DecodeElement(&e, &start)
+	//fmt.Printf("e: [%s]\n", e)
+	*l, err = parseLegendEntry(e)
+	return err
+}
+
+func parseLegendEntry(s string) (Entry, error) {
+	fields := strings.Split(s, ":")
+	if len(fields) != 4 {
+		return Entry{}, fmt.Errorf("Could not parse Entry from %v", s)
+	}
+
+	return Entry{fields[0], fields[1], fields[2], fields[3]}, nil
+}
+
+type RrdUpdates struct {
+	Meta struct {
+		Start   int64    `xml:"start"`
+		Columns int64    `xml:"columns"`
+		Legend  []Legend `xml:"legend"`
+	} `xml:"meta"`
+	Data []Data `xml:"data"`
+}
+
+func getRRDs(hostRecs map[xenAPI.HostRef]xenAPI.HostRecord, client *xenAPI.Client) {
+	qs := url.Values{}
+	tenSecondsAgo := time.Now().Unix() - 10
+	qs.Set("start", strconv.Itoa(int(tenSecondsAgo)))
+	qs.Set("host", "true")
+
+	u := url.URL{}
+	u.Scheme = "https"
+	u.Path = "rrd_updates"
+	u.RawQuery = qs.Encode()
+
+	for _, v := range hostRecs {
+		u.Host = v.Address
+		fmt.Printf("ID:[%v] hostname:[%v] ip:[%v]\n", v.UUID, v.Hostname, v.Address)
+		req, err := http.NewRequest("GET", u.String(), nil)
+		if err != nil {
+			log.Printf("error creating request: %+v\n", err)
+			continue
+		}
+
+		req.SetBasicAuth(config.Auth.Username, config.Auth.Password)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			log.Printf("error requesting RRD for host [%v/%v]: %v\n", v.Hostname, v.Address, err)
+			continue
+		}
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+
+		var ru RrdUpdates
+		if err := xml.Unmarshal(body, &ru); err != nil {
+			log.Printf("error unmarshalling XML: %v", err)
+		}
+
+		log.Printf("unmarshall success %+v ", ru.Data)
+	}
 }
 
 func (g *poolGathererClass) getXenClient() (
