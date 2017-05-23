@@ -110,6 +110,7 @@ func mapRrds(rrdUpdates []*RrdUpdates,
 				Labels: map[string]string{
 					"uuid":     entry.UUID,
 					"hostname": hostname,
+					"scope":    entry.EntityType,
 				},
 				Value: u.Data.Rows[0].Values[i],
 			}
@@ -184,7 +185,7 @@ func appendRrdsMetrics(metricList []*prometheus.GaugeVec, hostRecs map[xenAPI.Ho
 	mappedRecords := mapRrds(rrdMetrics, hostRecs, vmRecs)
 
 	for _, record := range mappedRecords {
-		xapiMetric := newMetric(record.Name, record.Labels, record.Value)
+		xapiMetric := newMetric(strings.Replace(record.Name, "-", "_", -1), record.Labels, record.Value)
 		metricList = append(metricList, xapiMetric)
 	}
 
