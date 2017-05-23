@@ -380,7 +380,14 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 
 	}
 
-	getRRDs(hostRecs, xenClient)
+	rrdMetrics := gatherRRDs(hostRecs)
+	mappedRecords := mapRrds(rrdMetrics, hostRecs, vmRecs)
+
+	for _, record := range mappedRecords {
+		xapiMetric := newMetric(record.Name, record.Labels, record.Value)
+		fmt.Printf(">>>>> %+v\n", *xapiMetric)
+		metricList = append(metricList, xapiMetric)
+	}
 
 	timeGenerated := time.Now().Unix()
 	log.Printf("gatherPoolData(): %s: gather time %d seconds\n",
@@ -388,30 +395,35 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 
 }
 
+type RrdMetric struct {
+	Name   string
+	Labels map[string]string
+	Value  float64
+}
+
 type Entry struct {
 	MetricType string // e.g.: AVERAGE
 	EntityType string // vm, host
 	UUID       string
-	MetricName string
+	Name       string
 }
 
 type Legend struct {
-	Entry Entry `xml:"entry"`
+	Entries []Entry `xml:"entry"`
 }
 
 type Row struct {
-	Timestamp int64    `xml:"t"`
-	Value     []string `xml:"v"`
+	Timestamp int64     `xml:"t"`
+	Values    []float64 `xml:"v"`
 }
 
 type Data struct {
-	Row Row `xml:"row"`
+	Rows []Row `xml:"row"`
 }
 
 func (l *Entry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) (err error) {
 	var e string
 	d.DecodeElement(&e, &start)
-	//fmt.Printf("e: [%s]\n", e)
 	*l, err = parseLegendEntry(e)
 	return err
 }
@@ -425,16 +437,71 @@ func parseLegendEntry(s string) (Entry, error) {
 	return Entry{fields[0], fields[1], fields[2], fields[3]}, nil
 }
 
-type RrdUpdates struct {
-	Meta struct {
-		Start   int64    `xml:"start"`
-		Columns int64    `xml:"columns"`
-		Legend  []Legend `xml:"legend"`
-	} `xml:"meta"`
-	Data []Data `xml:"data"`
+type RrdMeta struct {
+	Start   int64  `xml:"start"`
+	Columns int64  `xml:"columns"`
+	Legend  Legend `xml:"legend"`
 }
 
-func getRRDs(hostRecs map[xenAPI.HostRef]xenAPI.HostRecord, client *xenAPI.Client) {
+type RrdUpdates struct {
+	Meta RrdMeta `xml:"meta"`
+	Data Data    `xml:"data"`
+}
+
+func mapRrds(rrdUpdates []*RrdUpdates,
+	hostRecs map[xenAPI.HostRef]xenAPI.HostRecord,
+	vmRecs map[xenAPI.VMRef]xenAPI.VMRecord) []*RrdMetric {
+
+	uuidToOpaqueReference := map[string]string{}
+
+	for opaqueReference, hostRecord := range hostRecs {
+		uuidToOpaqueReference[hostRecord.UUID] = string(opaqueReference)
+	}
+
+	for opaqueReference, vmRecord := range vmRecs {
+		uuidToOpaqueReference[vmRecord.UUID] = string(opaqueReference)
+	}
+	var dataLen int
+	for i := 0; i < len(rrdUpdates); i++ {
+		dataLen += len(rrdUpdates[i].Data.Rows)
+	}
+
+	mapped := make([]*RrdMetric, 0, dataLen)
+	var (
+		hostname string
+		vmrec    xenAPI.VMRecord
+		hostrec  xenAPI.HostRecord
+	)
+	for _, u := range rrdUpdates {
+		for i, entry := range u.Meta.Legend.Entries {
+			opaqueReference := uuidToOpaqueReference[entry.UUID]
+
+			switch entry.EntityType {
+			case "vm":
+				vmrec = vmRecs[xenAPI.VMRef(opaqueReference)]
+				hostname = vmrec.NameLabel
+			case "host":
+				hostrec = hostRecs[xenAPI.HostRef(opaqueReference)]
+				hostname = hostrec.Hostname
+			}
+
+			m := RrdMetric{
+				Name: entry.Name,
+				Labels: map[string]string{
+					"uuid":     entry.UUID,
+					"hostname": hostname,
+				},
+				Value: u.Data.Rows[0].Values[i],
+			}
+
+			mapped = append(mapped, &m)
+		}
+	}
+
+	return mapped
+}
+
+func gatherRRDs(hostRecs map[xenAPI.HostRef]xenAPI.HostRecord) []*RrdUpdates {
 	qs := url.Values{}
 	tenSecondsAgo := time.Now().Unix() - 10
 	qs.Set("start", strconv.Itoa(int(tenSecondsAgo)))
@@ -445,32 +512,42 @@ func getRRDs(hostRecs map[xenAPI.HostRef]xenAPI.HostRecord, client *xenAPI.Clien
 	u.Path = "rrd_updates"
 	u.RawQuery = qs.Encode()
 
+	var updates []*RrdUpdates
 	for _, v := range hostRecs {
 		u.Host = v.Address
 		fmt.Printf("ID:[%v] hostname:[%v] ip:[%v]\n", v.UUID, v.Hostname, v.Address)
-		req, err := http.NewRequest("GET", u.String(), nil)
-		if err != nil {
-			log.Printf("error creating request: %+v\n", err)
-			continue
-		}
-
-		req.SetBasicAuth(config.Auth.Username, config.Auth.Password)
-
-		resp, err := httpClient.Do(req)
+		rrd, err := requestRRD(u)
 		if err != nil {
 			log.Printf("error requesting RRD for host [%v/%v]: %v\n", v.Hostname, v.Address, err)
-			continue
+		} else {
+			updates = append(updates, rrd)
 		}
-		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
-
-		var ru RrdUpdates
-		if err := xml.Unmarshal(body, &ru); err != nil {
-			log.Printf("error unmarshalling XML: %v", err)
-		}
-
-		log.Printf("unmarshall success %+v ", ru.Data)
 	}
+
+	return updates
+}
+
+func requestRRD(u url.URL) (*RrdUpdates, error) {
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.SetBasicAuth(config.Auth.Username, config.Auth.Password)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+
+	var ru RrdUpdates
+	if err := xml.Unmarshal(body, &ru); err != nil {
+		log.Printf("error unmarshalling XML: %v", err)
+	}
+
+	return &ru, nil
 }
 
 func (g *poolGathererClass) getXenClient() (
