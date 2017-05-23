@@ -2,13 +2,10 @@ package main
 
 import (
 	"crypto/tls"
-	"encoding/xml"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -393,161 +390,6 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 	log.Printf("gatherPoolData(): %s: gather time %d seconds\n",
 		g.poolName, timeGenerated-timeStarted)
 
-}
-
-type RrdMetric struct {
-	Name   string
-	Labels map[string]string
-	Value  float64
-}
-
-type Entry struct {
-	MetricType string // e.g.: AVERAGE
-	EntityType string // vm, host
-	UUID       string
-	Name       string
-}
-
-type Legend struct {
-	Entries []Entry `xml:"entry"`
-}
-
-type Row struct {
-	Timestamp int64     `xml:"t"`
-	Values    []float64 `xml:"v"`
-}
-
-type Data struct {
-	Rows []Row `xml:"row"`
-}
-
-func (l *Entry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) (err error) {
-	var e string
-	d.DecodeElement(&e, &start)
-	*l, err = parseLegendEntry(e)
-	return err
-}
-
-func parseLegendEntry(s string) (Entry, error) {
-	fields := strings.Split(s, ":")
-	if len(fields) != 4 {
-		return Entry{}, fmt.Errorf("Could not parse Entry from %v", s)
-	}
-
-	return Entry{fields[0], fields[1], fields[2], fields[3]}, nil
-}
-
-type RrdMeta struct {
-	Start   int64  `xml:"start"`
-	Columns int64  `xml:"columns"`
-	Legend  Legend `xml:"legend"`
-}
-
-type RrdUpdates struct {
-	Meta RrdMeta `xml:"meta"`
-	Data Data    `xml:"data"`
-}
-
-func mapRrds(rrdUpdates []*RrdUpdates,
-	hostRecs map[xenAPI.HostRef]xenAPI.HostRecord,
-	vmRecs map[xenAPI.VMRef]xenAPI.VMRecord) []*RrdMetric {
-
-	uuidToOpaqueReference := map[string]string{}
-
-	for opaqueReference, hostRecord := range hostRecs {
-		uuidToOpaqueReference[hostRecord.UUID] = string(opaqueReference)
-	}
-
-	for opaqueReference, vmRecord := range vmRecs {
-		uuidToOpaqueReference[vmRecord.UUID] = string(opaqueReference)
-	}
-	var dataLen int
-	for i := 0; i < len(rrdUpdates); i++ {
-		dataLen += len(rrdUpdates[i].Data.Rows)
-	}
-
-	mapped := make([]*RrdMetric, 0, dataLen)
-	var (
-		hostname string
-		vmrec    xenAPI.VMRecord
-		hostrec  xenAPI.HostRecord
-	)
-	for _, u := range rrdUpdates {
-		for i, entry := range u.Meta.Legend.Entries {
-			opaqueReference := uuidToOpaqueReference[entry.UUID]
-
-			switch entry.EntityType {
-			case "vm":
-				vmrec = vmRecs[xenAPI.VMRef(opaqueReference)]
-				hostname = vmrec.NameLabel
-			case "host":
-				hostrec = hostRecs[xenAPI.HostRef(opaqueReference)]
-				hostname = hostrec.Hostname
-			}
-
-			m := RrdMetric{
-				Name: entry.Name,
-				Labels: map[string]string{
-					"uuid":     entry.UUID,
-					"hostname": hostname,
-				},
-				Value: u.Data.Rows[0].Values[i],
-			}
-
-			mapped = append(mapped, &m)
-		}
-	}
-
-	return mapped
-}
-
-func gatherRRDs(hostRecs map[xenAPI.HostRef]xenAPI.HostRecord) []*RrdUpdates {
-	qs := url.Values{}
-	tenSecondsAgo := time.Now().Unix() - 10
-	qs.Set("start", strconv.Itoa(int(tenSecondsAgo)))
-	qs.Set("host", "true")
-
-	u := url.URL{}
-	u.Scheme = "https"
-	u.Path = "rrd_updates"
-	u.RawQuery = qs.Encode()
-
-	var updates []*RrdUpdates
-	for _, v := range hostRecs {
-		u.Host = v.Address
-		fmt.Printf("ID:[%v] hostname:[%v] ip:[%v]\n", v.UUID, v.Hostname, v.Address)
-		rrd, err := requestRRD(u)
-		if err != nil {
-			log.Printf("error requesting RRD for host [%v/%v]: %v\n", v.Hostname, v.Address, err)
-		} else {
-			updates = append(updates, rrd)
-		}
-	}
-
-	return updates
-}
-
-func requestRRD(u url.URL) (*RrdUpdates, error) {
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.SetBasicAuth(config.Auth.Username, config.Auth.Password)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-
-	var ru RrdUpdates
-	if err := xml.Unmarshal(body, &ru); err != nil {
-		log.Printf("error unmarshalling XML: %v", err)
-	}
-
-	return &ru, nil
 }
 
 func (g *poolGathererClass) getXenClient() (
