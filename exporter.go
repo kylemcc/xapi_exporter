@@ -377,14 +377,7 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 
 	}
 
-	rrdMetrics := gatherRRDs(hostRecs)
-	mappedRecords := mapRrds(rrdMetrics, hostRecs, vmRecs)
-
-	for _, record := range mappedRecords {
-		xapiMetric := newMetric(record.Name, record.Labels, record.Value)
-		fmt.Printf(">>>>> %+v\n", *xapiMetric)
-		metricList = append(metricList, xapiMetric)
-	}
+	metricList = appendRrdsMetrics(metricList, hostRecs, vmRecs)
 
 	timeGenerated := time.Now().Unix()
 	log.Printf("gatherPoolData(): %s: gather time %d seconds\n",

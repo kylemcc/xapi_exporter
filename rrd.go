@@ -12,6 +12,7 @@ import (
 	"time"
 
 	xenAPI "github.com/johnprather/go-xen-api-client"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Entry struct {
@@ -170,3 +171,15 @@ func requestRRD(u url.URL) (*RrdUpdates, error) {
 	return &ru, nil
 }
 
+func appendRrdsMetrics(metricList []*prometheus.GaugeVec, hostRecs map[xenAPI.HostRef]xenAPI.HostRecord, vmRecs map[xenAPI.VMRef]xenAPI.VMRecord) []*prometheus.GaugeVec {
+	rrdMetrics := gatherRRDs(hostRecs)
+	mappedRecords := mapRrds(rrdMetrics, hostRecs, vmRecs)
+
+	for _, record := range mappedRecords {
+		xapiMetric := newMetric(record.Name, record.Labels, record.Value)
+		fmt.Printf(">>>>> %+v\n", *xapiMetric)
+		metricList = append(metricList, xapiMetric)
+	}
+
+  return metricList
+}
