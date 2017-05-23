@@ -28,7 +28,6 @@ type RrdMetric struct {
 	Value  float64
 }
 
-
 type Legend struct {
 	Entries []Entry `xml:"entry"`
 }
@@ -133,22 +132,31 @@ func gatherRRDs(hostRecs map[xenAPI.HostRef]xenAPI.HostRecord) []*RrdUpdates {
 	u.Path = "rrd_updates"
 	u.RawQuery = qs.Encode()
 
+	resultCh := make(chan *RrdUpdates)
 	var updates []*RrdUpdates
+
 	for _, v := range hostRecs {
 		u.Host = v.Address
-		fmt.Printf("ID:[%v] hostname:[%v] ip:[%v]\n", v.UUID, v.Hostname, v.Address)
-		rrd, err := requestRRD(u)
-		if err != nil {
-			log.Printf("error requesting RRD for host [%v/%v]: %v\n", v.Hostname, v.Address, err)
-		} else {
-			updates = append(updates, rrd)
+		log.Printf("Requesting RRDs from ID:[%v] hostname:[%v] ip:[%v]\n", v.UUID, v.Hostname, v.Address)
+		go func(rrdUrl url.URL) {
+			up, err := requestRRD(rrdUrl, resultCh)
+			if err != nil {
+				log.Printf("error requesting RRD for host [%v]: %v", v.Hostname, err)
+			}
+			resultCh <- up
+		}(u)
+	}
+
+	for i := 0; i < len(hostRecs); i++ {
+		if up := <-resultCh; up != nil {
+			updates = append(updates, up)
 		}
 	}
 
 	return updates
 }
 
-func requestRRD(u url.URL) (*RrdUpdates, error) {
+func requestRRD(u url.URL, resultCh chan<- *RrdUpdates) (*RrdUpdates, error) {
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -165,7 +173,7 @@ func requestRRD(u url.URL) (*RrdUpdates, error) {
 
 	var ru RrdUpdates
 	if err := xml.Unmarshal(body, &ru); err != nil {
-		log.Printf("error unmarshalling XML: %v", err)
+		return nil, err
 	}
 
 	return &ru, nil
@@ -177,9 +185,8 @@ func appendRrdsMetrics(metricList []*prometheus.GaugeVec, hostRecs map[xenAPI.Ho
 
 	for _, record := range mappedRecords {
 		xapiMetric := newMetric(record.Name, record.Labels, record.Value)
-		fmt.Printf(">>>>> %+v\n", *xapiMetric)
 		metricList = append(metricList, xapiMetric)
 	}
 
-  return metricList
+	return metricList
 }
