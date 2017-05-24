@@ -128,6 +128,7 @@ func mapRrds(rrdUpdates []*RrdUpdates,
 					"uuid":          entry.UUID,
 					"hostname":      hostname,
 					"resident_host": residentHost,
+					"scope":         entry.EntityType,
 				},
 				Value: u.Data.Rows[0].Values[i],
 			}
