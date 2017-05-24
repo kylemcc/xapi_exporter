@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,17 @@ func parseLegendEntry(s string) (Entry, error) {
 	return Entry{fields[0], fields[1], fields[2], fields[3]}, nil
 }
 
+var cpuUtilRe = regexp.MustCompile(`cpu(?P<cpu_num>\d+)(?:-C(?P<core_num>\d+))?`)
+
+func parseCpuMetric(metric string) (string, map[string]string) {
+	res := cpuUtilRe.FindStringSubmatch(metric)
+	labels := map[string]string{}
+	for i, v := range res[1:] {
+		labels[cpuUtilRe.SubexpNames()[i+1]] = v
+	}
+	return "cpu", labels
+}
+
 func mapRrds(rrdUpdates []*RrdUpdates,
 	hostRecs map[xenAPI.HostRef]xenAPI.HostRecord,
 	vmRecs map[xenAPI.VMRef]xenAPI.VMRecord) []*RrdMetric {
@@ -118,6 +130,14 @@ func mapRrds(rrdUpdates []*RrdUpdates,
 					"resident_host": residentHost,
 				},
 				Value: u.Data.Rows[0].Values[i],
+			}
+
+			if cpuUtilRe.MatchString(m.Name) {
+				name, labels := parseCpuMetric(m.Name)
+				m.Name = name
+				for k, v := range labels {
+					m.Labels[k] = v
+				}
 			}
 
 			mapped = append(mapped, &m)

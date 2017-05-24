@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	xenAPI "github.com/johnprather/go-xen-api-client"
@@ -90,5 +91,30 @@ func TestMappingRrds(t *testing.T) {
 
 	if length := len(mapped); length != expectedLen {
 		t.Errorf("Expected 1 element but got %d", length)
+	}
+}
+
+func TestParseCpuMetric(t *testing.T) {
+	cases := []struct {
+		input          string
+		expectedName   string
+		expectedLabels map[string]string
+	}{
+		{"cpu0", "cpu", map[string]string{"cpu_num": "0"}},
+		{"cpu1", "cpu", map[string]string{"cpu_num": "1"}},
+		{"cpu0-C0", "cpu", map[string]string{"cpu_num": "0", "core_num": "0"}},
+		{"cpu0-C1", "cpu", map[string]string{"cpu_num": "0", "core_num": "1"}},
+		{"cpu1-C0", "cpu", map[string]string{"cpu_num": "1", "core_num": "0"}},
+		{"cpu1-C1", "cpu", map[string]string{"cpu_num": "1", "core_num": "1"}},
+	}
+
+	for _, c := range cases {
+		actualName, actualLabels := parseCpuMetric(c.input)
+		if actualName != c.expectedName {
+			t.Errorf("failed to parse cpu metric name. Got [%v] expected [%v]", actualName, c.expectedName)
+		}
+		if !reflect.DeepEqual(actualLabels, c.expectedLabels) {
+			t.Errorf("failed to parse cpu metric labels. Got [%v] expected [%v]", actualLabels, c.expectedLabels)
+		}
 	}
 }
