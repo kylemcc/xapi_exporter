@@ -88,9 +88,9 @@ func mapRrds(rrdUpdates []*RrdUpdates,
 
 	mapped := make([]*RrdMetric, 0, dataLen)
 	var (
-		hostname string
-		vmrec    xenAPI.VMRecord
-		hostrec  xenAPI.HostRecord
+		labels  map[string]string
+		vmrec   xenAPI.VMRecord
+		hostrec xenAPI.HostRecord
 	)
 	for _, u := range rrdUpdates {
 		for i, entry := range u.Meta.Legend.Entries {
@@ -99,20 +99,23 @@ func mapRrds(rrdUpdates []*RrdUpdates,
 			switch entry.EntityType {
 			case "vm":
 				vmrec = vmRecs[xenAPI.VMRef(opaqueReference)]
-				hostname = vmrec.NameLabel
+				labels = map[string]string{
+					"uuid":          entry.UUID,
+					"hostname":      vmrec.NameLabel,
+					"resident_host": vmrec.ResidentOn.Hostname,
+				}
 			case "host":
 				hostrec = hostRecs[xenAPI.HostRef(opaqueReference)]
-				hostname = hostrec.Hostname
+				labels = map[string]string{
+					"uuid":     entry.UUID,
+					"hostname": vmrec.NameLabel,
+				}
 			}
 
 			m := RrdMetric{
-				Name: entry.Name,
-				Labels: map[string]string{
-					"uuid":     entry.UUID,
-					"hostname": hostname,
-					"scope":    entry.EntityType,
-				},
-				Value: u.Data.Rows[0].Values[i],
+				Name:   entry.Name,
+				Labels: labels,
+				Value:  u.Data.Rows[0].Values[i],
 			}
 
 			mapped = append(mapped, &m)
