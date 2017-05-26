@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +13,13 @@ import (
 
 	xenAPI "github.com/johnprather/go-xen-api-client"
 	"github.com/prometheus/client_golang/prometheus"
+)
+
+var (
+	tr = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	httpClient = &http.Client{Transport: tr}
 )
 
 type exporterClass struct {
@@ -136,18 +145,21 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 		g.poolName, timeConnected-timeStarted)
 
 	poolRecs, err := xenClient.Pool.GetAllRecords(session)
+	//fmt.Printf("pool: %+v\n", poolRecs)
 	if err != nil {
 		log.Printf("Error getting pool records for %s: %s", g.poolName, err.Error())
 		return
 	}
 
 	hostRecs, err := xenClient.Host.GetAllRecords(session)
+	//fmt.Printf("host: %+v\n", hostRecs)
 	if err != nil {
 		log.Printf("Error getting host records for %s: %s\n", g.poolName, err.Error())
 		return
 	}
 
 	vmRecs, err := xenClient.VM.GetAllRecords(session)
+	//fmt.Printf("vms: %+v\n", vmRecs)
 	if err != nil {
 		log.Printf("Error getting vm records for %s: %s\n", g.poolName, err.Error())
 		return
@@ -364,6 +376,8 @@ func (g *poolGathererClass) gather(retCh chan []*prometheus.GaugeVec) {
 		}
 
 	}
+
+	metricList = appendRrdsMetrics(metricList, hostRecs, vmRecs)
 
 	timeGenerated := time.Now().Unix()
 	log.Printf("gatherPoolData(): %s: gather time %d seconds\n",
