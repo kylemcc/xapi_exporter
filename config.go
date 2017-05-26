@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io/ioutil"
 	"log"
+	"os"
 	"regexp"
 	"time"
 
@@ -39,7 +40,17 @@ func initConfig() {
 		log.Fatalf("Unable to parse config: %s", err.Error())
 	}
 
+	loadEnv()
 	validateConfig()
+}
+
+func loadEnv() {
+	if u := os.Getenv("XEN_USERNAME"); u != "" {
+		config.Auth.Username = u
+	}
+	if p := os.Getenv("XEN_PASSWORD"); p != "" {
+		config.Auth.Password = p
+	}
 }
 
 func validateConfig() {
