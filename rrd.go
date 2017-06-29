@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -122,6 +123,10 @@ func mapRrds(rrdUpdates []*RrdUpdates,
 				residentHost = ""
 			}
 
+			if math.IsNaN(u.Data.Rows[0].Values[i]) {
+				log.Printf("dropping metric [%s] for host [%s] - Nan\n", entry.Name, hostname)
+				continue
+			}
 			m := RrdMetric{
 				Name: entry.Name,
 				Labels: map[string]string{
